@@ -49,7 +49,7 @@ func main() {
 	flag.UintVar(&f.staticDoHTTLInSeconds, "static-doh-ttl", 86400, "use static DoH ttl")
 	flag.IntVar(&f.rateLimitBytesPerSecond, "rate-limit-bytes-per-second", 20*1024*1024, "rate limit bytes per second on fooling site")
 	flag.StringVar(&f.dnsUpstream, "dns-upstream", "1.1.1.1:53", "dns upstream")
-	flag.StringVar(&f.dnsListenAddr, "dns-listen-addr", "127.0.0.1:5533", "internal dns listen address")
+	flag.StringVar(&f.dnsListenAddr, "dns-listen-addr", "127.0.0.1:53", "internal dns listen address")
 	flag.StringVar(&f.outboundIface, "outbound-iface", "en0", "outbound interface to bind to")
 	flag.StringVar(&f.nic, "nic", "Wi-Fi", "nic to set DNS on")
 	flag.BoolVar(&f.enableDNSFallback, "enable-dns-fallback", true, "enable dns fallback when the safest dns way fails")

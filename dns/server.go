@@ -26,5 +26,6 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		handleFailed(w, r, dns.RcodeServerFailure)
 		return
 	}
+
 	w.WriteMsg(answer)
 }

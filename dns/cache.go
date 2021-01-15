@@ -2,7 +2,6 @@ package dns
 
 import (
 	"errors"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -18,17 +17,6 @@ const (
 
 var ErrLookupTimeout = errors.New("lookup timeout")
 
-func AnswerToIP(msg *dns.Msg) net.IP {
-	for _, answer := range msg.Answer {
-		switch ans := answer.(type) {
-		case *dns.AAAA:
-			return ans.AAAA
-		case *dns.A:
-			return ans.A
-		}
-	}
-	return nil
-}
 
 type HandlerOverCache struct {
 	sync.RWMutex
@@ -49,13 +37,13 @@ func (c *HandlerOverCache) Lookup(r *dns.Msg) (*dns.Msg, error) {
 	key := makeMsgAsString(r)
 	c.Lock()
 
-	Value, ok := c.cache.Get(key)
+	value, ok := c.cache.Get(key)
 	var resolve *resolver
 	if !ok {
 		resolve = &resolver{}
 		c.cache.Add(key, resolve)
 	} else {
-		resolve = Value.(*resolver)
+		resolve = value.(*resolver)
 		if resolve.finished && resolve.answer.expiredAt.Before(time.Now()) {
 			resolve.finished = false
 			ok = false
@@ -101,16 +89,11 @@ func (c *HandlerOverCache) do(key string, question *dns.Msg) {
 	var answer *dns.Msg
 	for _, upstream := range c.upstreams {
 		host := strings.TrimRight(question.Question[0].Name, ".")
-		if answer, err = upstream.Lookup(question); err == nil && len(answer.Answer) > 0 {
-			if ip := AnswerToIP(answer); ip != nil {
-				expriedAt = expriedAt.Add(time.Duration(getTTL(answer)) * time.Second)
-
-				logrus.Infof("dns lookup %s -> %v via %s", host, ip.String(), upstream.String())
-
-				break
-			}
-
-		} else if err != nil {
+		if answer, err = upstream.Lookup(question); err == nil  {
+			expriedAt = expriedAt.Add(time.Duration(getTTL(answer)) * time.Second)
+			logrus.Infof("dns lookup %s via %s", host, upstream.String())
+			break
+		} else {
 			logrus.Warnf("failed to dns lookup %s via %s: %v", host, upstream.String(), err)
 		}
 	}

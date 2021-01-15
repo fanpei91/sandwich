@@ -65,7 +65,7 @@ func New(nic, upstreamDNS, dnsListenAddr, secretKey, serverAddr string, staticDo
 				return url.Parse("https://" + serverAddr)
 			},
 			http.Header{
-				proxy.HeaderSecret: []string{secretKey},
+				proxy.HeaderSecret: []string { secretKey },
 			},
 		),
 	}
@@ -264,6 +264,8 @@ func (s *System) outboundConn(conn net.Conn) (net.Conn, error) {
 
 	addr := answers[0]
 	p, _ := strconv.ParseInt(port, 10, 32)
+
+	logrus.Infof("internal DNS server lookup %s -> %s", domain, addr)
 
 	return outboundConn{
 		Conn:    conn,

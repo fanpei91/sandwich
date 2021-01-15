@@ -9,6 +9,7 @@ require (
 	github.com/miekg/dns v1.1.35
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sirupsen/logrus v1.7.0
+	github.com/stretchr/testify v1.6.1
 	golang.zx2c4.com/wireguard v0.0.20201118
 	gvisor.dev/gvisor v0.0.0-20201230043330-9c3ca53ebf28
 )
