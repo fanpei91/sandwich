@@ -222,16 +222,18 @@ func (s *System) handleConn(conn net.Conn) {
 
 	if targetConn, err = dial(context.Background(), network, targetAddr); err != nil {
 		logrus.Warnf(
-			"%s faield to dial %s://%s from %s via proxy %s: %v",
+			"%s faield to dial %s://%s via proxy %s: %v",
 			conn.LocalAddr(),
 			conn.RemoteAddr().Network(),
-			conn.RemoteAddr(), conn.LocalAddr(),
+			conn.RemoteAddr(),
 			via,
 			err,
 		)
 		conn.Close()
 		return
 	}
+
+	logrus.Infof("exchange data between %s and %s", targetConn.LocalAddr(), targetConn.RemoteAddr())
 
 	go utils.Exchange(conn, targetConn)
 	utils.Exchange(targetConn, conn)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/golang/groupcache/lru"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -80,6 +81,7 @@ func (d *HandlerOverCache) do(ctx context.Context, host string) {
 		if ip != nil {
 			break
 		}
+		logrus.Warnf("failed to lookup %s via %s", host, upstream.String())
 	}
 
 	d.Lock()

@@ -3,9 +3,10 @@ package dns
 import (
 	"context"
 	"fmt"
-	"github.com/fanpei91/spn/dialer"
 	"net"
 	"time"
+
+	"github.com/fanpei91/spn/dialer"
 )
 
 type HandlerOverUDP struct {
@@ -22,11 +23,13 @@ func NewHandlerOverUDP(upstream string, timeout time.Duration) *HandlerOverUDP {
 
 func (h *HandlerOverUDP) Lookup(ctx context.Context, host string) (ip net.IP, expriedAt time.Time) {
 	resolver := new(net.Resolver)
+	resolver.PreferGo = true
 	resolver.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
 		d, err := dialer.New()
 		if err != nil {
 			return nil, err
 		}
+
 		return d.DialContext(ctx, "udp", h.upstream)
 	}
 
