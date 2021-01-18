@@ -11,20 +11,20 @@ import (
 )
 
 type Hijacker struct {
-	pool         *fakeIPPool
-	mutex        sync.Mutex
-	interceptors []Handler
+	pool  *fakeIPPool
+	mutex sync.Mutex
+	hosts HandlerOverHost
 }
 
-func NewHijacker(ipRange string, interceptors []Handler) (*Hijacker, error) {
+func NewHijacker(ipRange string) (*Hijacker, error) {
 	p, err := newFakeIPPool(ipRange)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Hijacker{
-		pool:         p,
-		interceptors: interceptors,
+		pool:  p,
+		hosts: NewHandlerOverHost(0),
 	}, nil
 }
 
@@ -62,13 +62,20 @@ func (h *Hijacker) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	domain := r.Question[0].Name
 	host := strings.TrimRight(domain, ".")
 
-	for _, interceptor := range h.interceptors {
-		answer, err := interceptor.Lookup(r)
-		if err == nil {
-			logrus.Infof("dns hijack %s to hosts", host)
-			w.WriteMsg(answer)
-			return
-		}
+	answer := r.Copy()
+	answer.SetRcode(r, dns.RcodeSuccess)
+	answer.Authoritative = true
+	answer.RecursionAvailable = true
+
+	ip, _ := h.hosts.Lookup(nil, host)
+	if ip != nil {
+		answer.Answer = append(answer.Answer, &dns.A{
+			Hdr: dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 0},
+			A:   ip,
+		})
+		logrus.Infof("dns hijack %s to hosts", host)
+		w.WriteMsg(answer)
+		return
 	}
 
 	if !strings.Contains(host, ".") {
@@ -77,24 +84,19 @@ func (h *Hijacker) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
-	ip := h.pool.lookup(r)
-
-	logrus.Infof("dns hijack %s -> %v", host, ip.String())
-
-	answer := r.Copy()
+	ip = h.pool.lookup(r)
 	answer.Answer = append(answer.Answer, &dns.A{
 		Hdr: dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 0},
 		A:   ip,
 	})
-	answer.SetRcode(r, dns.RcodeSuccess)
-	answer.Authoritative = true
-	answer.RecursionAvailable = true
+
+	logrus.Infof("dns hijack %s -> %v", host, ip.String())
 
 	w.WriteMsg(answer)
 }
 
-func (h *Hijacker) FindQuestion(ip net.IP) (*dns.Msg, bool) {
-	return h.pool.findQuestion(ip)
+func (h *Hijacker) ReverseLookup(ip net.IP) (string, bool) {
+	return h.pool.reverseLookup(ip)
 }
 
 func handleFailed(w dns.ResponseWriter, r *dns.Msg, code int) {
@@ -121,7 +123,7 @@ func (d dnsResponseWriter) TsigStatus() error {
 	return nil
 }
 
-func (d dnsResponseWriter) TsigTimersOnly(b bool) {
+func (d dnsResponseWriter) TsigTimersOnly(bool) {
 
 }
 

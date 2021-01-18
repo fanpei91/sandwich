@@ -14,7 +14,7 @@ type fakeIPPool struct {
 	max           uint32
 	offset        uint32
 	answerCache   map[string]uint32
-	questionCache map[uint32]*dns.Msg
+	questionCache map[uint32]string
 }
 
 func newFakeIPPool(ipRange string) (*fakeIPPool, error) {
@@ -34,14 +34,14 @@ func newFakeIPPool(ipRange string) (*fakeIPPool, error) {
 		min:           min,
 		max:           max,
 		answerCache:   make(map[string]uint32),
-		questionCache: make(map[uint32]*dns.Msg),
+		questionCache: make(map[uint32]string),
 	}
 	return p, nil
 }
 
-func (p *fakeIPPool) findQuestion(ip net.IP) (*dns.Msg, bool) {
+func (p *fakeIPPool) reverseLookup(ip net.IP) (string, bool) {
 	if ip = ip.To4(); ip == nil {
-		return nil, false
+		return "", false
 	}
 
 	p.mutex.Lock()
@@ -70,13 +70,13 @@ func (p *fakeIPPool) lookup(question *dns.Msg) net.IP {
 }
 
 func (p *fakeIPPool) overwrite(ipNum uint32, question *dns.Msg) {
-	if answer := p.questionCache[ipNum]; answer != nil {
-		delete(p.answerCache, answer.Question[0].Name)
+	if answer := p.questionCache[ipNum]; answer != "" {
+		delete(p.answerCache, answer)
 	}
 
 	host := question.Question[0].Name
 	p.answerCache[host] = ipNum
-	p.questionCache[ipNum] = question.Copy()
+	p.questionCache[ipNum] = host
 }
 
 func ipv4ToUint(ip net.IP) uint32 {

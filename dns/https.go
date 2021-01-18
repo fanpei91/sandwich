@@ -3,20 +3,19 @@ package dns
 import (
 	"bytes"
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/fanpei91/spn/dialer"
-	"github.com/miekg/dns"
 )
 
 type Handler interface {
-	Lookup(r *dns.Msg) (*dns.Msg, error)
+	Lookup(ctx context.Context, host string) (net.IP, time.Time)
 	String() string
 }
 
@@ -25,21 +24,28 @@ const (
 )
 
 type HandlerOverHTTPS struct {
-	client   *http.Client
-	provider string
-	proxy    Proxy
-	ttl      uint32
-	timeout  time.Duration
+	client    *http.Client
+	provider  string
+	proxy     Proxy
+	staticTTL time.Duration
+	timeout   time.Duration
 }
 
 type Proxy func(*http.Request) (*url.URL, error)
 
-func NewHandlerOverHTTPS(ttl uint32, provider string, upstreamToLookupProvider string, timeout time.Duration, proxy Proxy, proxyHeader http.Header) *HandlerOverHTTPS {
+func NewHandlerOverHTTPS(
+	staticTTL time.Duration,
+	provider string,
+	upstreamToLookupProvider string,
+	timeout time.Duration,
+	proxy Proxy,
+	proxyHeader http.Header,
+) *HandlerOverHTTPS {
 	hander := &HandlerOverHTTPS{
-		ttl:      ttl,
-		provider: provider,
-		proxy:    proxy,
-		timeout:  timeout,
+		staticTTL: staticTTL,
+		provider:  provider,
+		proxy:     proxy,
+		timeout:   timeout,
 		client: &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
@@ -59,39 +65,87 @@ func NewHandlerOverHTTPS(ttl uint32, provider string, upstreamToLookupProvider s
 	return hander
 }
 
-func (h *HandlerOverHTTPS) Lookup(question *dns.Msg) (*dns.Msg, error) {
-	packed, _ := question.Pack()
-	req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("https://%s/dns-query", h.provider), bytes.NewBuffer(packed))
-	req.Header.Set("Content-Type", "application/dns-message")
-	req.Header.Set("Accept", "application/dns-message")
+func (h *HandlerOverHTTPS) Lookup(ctx context.Context, host string) (ip net.IP, expriedAt time.Time) {
+	provider := fmt.Sprintf("https://rubyfish.cn/dns-query?name=%s", host)
+	req, _ := http.NewRequest(http.MethodGet, provider, nil)
+	req.Header.Set("Accept", "application/dns-json")
+	req = req.WithContext(ctx)
 
 	res, err := h.client.Do(req)
 	if res != nil {
 		defer res.Body.Close()
 	}
 	if err != nil {
-		return nil, err
+		return nil, time.Now()
 	}
 
-	if res.StatusCode != http.StatusOK {
-		return nil, errors.New(fmt.Sprintf("provider failure with status code: %d", res.StatusCode))
+	buf, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, time.Now()
 	}
 
-	buf := bytes.NewBuffer(nil)
-	if _, err := io.Copy(buf, res.Body); err != nil {
-		return nil, err
+	rr := &response{}
+	json.NewDecoder(bytes.NewBuffer(buf)).Decode(rr)
+	if rr.Status != 0 {
+		return nil, time.Now()
+	}
+	if len(rr.Answer) == 0 {
+		return nil, time.Now()
 	}
 
-	answer := new(dns.Msg)
-
-	if err := answer.Unpack(buf.Bytes()); err != nil {
-		return nil, err
+	var answer *answer
+	for _, a := range rr.Answer {
+		if a.Type == typeIPv4 || a.Type == typeIPv6 {
+			answer = &a
+			break
+		}
 	}
 
-	modifyTTL(answer, h.ttl)
-	return answer, nil
+	if answer != nil {
+		ip = net.ParseIP(answer.Data)
+		expriedAt = time.Now().Add(time.Duration(answer.TTL) * time.Second)
+		if h.staticTTL != 0 {
+			expriedAt = time.Now().Add(h.staticTTL)
+		}
+	}
+
+	return ip, expriedAt
 }
 
 func (h *HandlerOverHTTPS) String() string {
-	return fmt.Sprintf("HTTPS[upstream:%s, proxy enabled: %v, timeout: %v, ttl: %d]", h.provider, h.proxy != nil, h.timeout, h.ttl)
+	return fmt.Sprintf(
+		"HTTPS[upstream:%s, proxy enabled: %v, timeout: %v, ttl: %d]",
+		h.provider,
+		h.proxy != nil,
+		h.timeout,
+		h.staticTTL/time.Second,
+	)
+}
+
+const (
+	typeIPv4 = 1
+	typeIPv6 = 28
+)
+
+type answer struct {
+	Type int    `json:"type"`
+	TTL  int    `json:"TTL"`
+	Data string `json:"data"`
+	ip   net.IP
+}
+
+type response struct {
+	Status int      `json:"Status"`
+	Answer []answer `json:"Answer"`
+}
+
+type answerCache struct {
+	ip        net.IP
+	expiredAt time.Time
+}
+
+type dnsResolver struct {
+	waiters  []chan answerCache
+	answer   answerCache
+	finished bool
 }

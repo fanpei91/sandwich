@@ -33,7 +33,7 @@ const (
 type System struct {
 	nic                string
 	upstreamDNS        string
-	staticDoHTTL       uint32
+	staticDoHTTL       time.Duration
 	tun                string
 	secretKey          string
 	serverAddr         string
@@ -42,18 +42,24 @@ type System struct {
 	dnsResovler        dns.Handler
 	listener           *tun.Listener
 	hijackDNS          bool
-	dnsListenAddr      string
 }
 
-func New(nic, upstreamDNS, dnsListenAddr, secretKey, serverAddr string, staticDoHTTL uint32, enableDNSFallback, hijackDNS bool) (sys *System, err error) {
+func New(
+	nic,
+	upstreamDNS,
+	secretKey,
+	serverAddr string,
+	staticDoHTTL time.Duration,
+	enableDNSFallback,
+	hijackDNS bool,
+) (sys *System, err error) {
 	sys = &System{
-		nic:           nic,
-		upstreamDNS:   upstreamDNS,
-		staticDoHTTL:  staticDoHTTL,
-		secretKey:     secretKey,
-		serverAddr:    serverAddr,
-		hijackDNS:     hijackDNS,
-		dnsListenAddr: dnsListenAddr,
+		nic:          nic,
+		upstreamDNS:  upstreamDNS,
+		staticDoHTTL: staticDoHTTL,
+		secretKey:    secretKey,
+		serverAddr:   serverAddr,
+		hijackDNS:    hijackDNS,
 	}
 	upstreams := []dns.Handler{
 		dns.NewHandlerOverHTTPS(
@@ -65,35 +71,19 @@ func New(nic, upstreamDNS, dnsListenAddr, secretKey, serverAddr string, staticDo
 				return url.Parse("https://" + serverAddr)
 			},
 			http.Header{
-				proxy.HeaderSecret: []string { secretKey },
+				proxy.HeaderSecret: []string{secretKey},
 			},
 		),
 	}
 	if enableDNSFallback {
 		upstreams = append(
 			upstreams,
-			dns.NewHandlerOverHTTPS(
-				0,
-				"1.1.1.1:443",
-				upstreamDNS,
-				5*time.Second,
-				nil,
-				nil,
-			),
-			dns.NewHandlerOverHTTPS(
-				staticDoHTTL,
-				dns.DefaultDNSOverHTTPSProvider,
-				upstreamDNS,
-				5*time.Second,
-				nil,
-				nil,
-			),
 			dns.NewHandlerOverUDP(upstreamDNS, time.Second),
 		)
 	}
 
-	sys.dnsResovler = dns.NewHandlerOverCache(upstreams, 1<<16)
-	sys.dnsHijacker, _ = dns.NewHijacker(ipRange, []dns.Handler{dns.NewHandlerOverHost(0)})
+	sys.dnsResovler = dns.NewHandlerOverCache(upstreams)
+	sys.dnsHijacker, _ = dns.NewHijacker(ipRange)
 	return sys, nil
 }
 
@@ -117,12 +107,6 @@ func (s *System) Setup() error {
 	if err := setDNSServers([]string{"1.1.1.1"}, s.nic); err != nil {
 		return err
 	}
-
-	go func(){
-		if err := dns.New(s.dnsResovler, s.dnsListenAddr).Listen(); err != nil {
-			logrus.Fatalf("failed to start internal DNS server: %v", err)
-		}
-	}()
 
 	if err := setSysRoute(); err != nil {
 		return err
@@ -237,7 +221,14 @@ func (s *System) handleConn(conn net.Conn) {
 	logrus.Infof("%s dial %s://%s via proxy %s", conn.LocalAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr(), via)
 
 	if targetConn, err = dial(context.Background(), network, targetAddr); err != nil {
-		logrus.Warnf("%s faield to dial %s://%s from %s via proxy %s: %v", conn.LocalAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr(), conn.LocalAddr(), via, err)
+		logrus.Warnf(
+			"%s faield to dial %s://%s from %s via proxy %s: %v",
+			conn.LocalAddr(),
+			conn.RemoteAddr().Network(),
+			conn.RemoteAddr(), conn.LocalAddr(),
+			via,
+			err,
+		)
 		conn.Close()
 		return
 	}
@@ -250,39 +241,28 @@ func (s *System) outboundConn(conn net.Conn) (net.Conn, error) {
 	host, port, _ := net.SplitHostPort(conn.RemoteAddr().String())
 	ip := net.ParseIP(host)
 
-	question, ok := s.dnsHijacker.FindQuestion(ip)
+	host, ok := s.dnsHijacker.ReverseLookup(ip)
 	if !ok {
 		return conn, nil
 	}
 
-	domain := strings.TrimRight(question.Question[0].Name, ".")
-	answers, err := s.lookup(context.Background(), domain)
-	if err != nil {
-		logrus.Warnf("failed to lookup %s from %s: %v", domain, s.dnsListenAddr, err)
-		return conn, err
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addr, _ := s.dnsResovler.Lookup(ctx, host)
+	if addr == nil {
+		logrus.Warnf("failed to lookup %s", host)
+		return conn, nil
 	}
 
-	addr := answers[0]
 	p, _ := strconv.ParseInt(port, 10, 32)
 
-	logrus.Infof("internal DNS server lookup %s -> %s", domain, addr)
+	logrus.Infof("lookup %s -> %s", host, addr)
 
 	return outboundConn{
 		Conn:    conn,
 		dstAddr: addr,
 		dstPort: int(p),
 	}, nil
-}
-
-func (s *System) lookup(ctx context.Context, host string) ([]net.IP, error) {
-	r := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := new(net.Dialer)
-			return d.DialContext(ctx, "udp", s.dnsListenAddr)
-		},
-	}
-	return r.LookupIP(ctx, "ip", host)
 }
 
 func (s *System) pullLatestIPRange(ctx context.Context) error {

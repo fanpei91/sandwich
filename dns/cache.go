@@ -1,66 +1,59 @@
 package dns
 
 import (
-	"errors"
-	"strings"
+	"context"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/golang/groupcache/lru"
-	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 const (
 	timeout = 10 * time.Second
 )
 
-var ErrLookupTimeout = errors.New("lookup timeout")
-
-
 type HandlerOverCache struct {
 	sync.RWMutex
 	upstreams []Handler
-	max       int
 	cache     *lru.Cache
 }
 
-func NewHandlerOverCache(upstreams []Handler, max int) *HandlerOverCache {
-	return &HandlerOverCache{
+func NewHandlerOverCache(upstreams []Handler) *HandlerOverCache {
+	d := &HandlerOverCache{
+		cache:     lru.New(2 << 15),
 		upstreams: upstreams,
-		max:       max,
-		cache:     lru.New(max),
 	}
+	return d
 }
 
-func (c *HandlerOverCache) Lookup(r *dns.Msg) (*dns.Msg, error) {
-	key := makeMsgAsString(r)
-	c.Lock()
+func (d *HandlerOverCache) Lookup(ctx context.Context, host string) (ip net.IP, expriedAt time.Time) {
+	d.Lock()
 
-	value, ok := c.cache.Get(key)
-	var resolve *resolver
+	cached, ok := d.cache.Get(host)
+	var resolver *dnsResolver
 	if !ok {
-		resolve = &resolver{}
-		c.cache.Add(key, resolve)
+		resolver = &dnsResolver{}
+		d.cache.Add(host, resolver)
 	} else {
-		resolve = value.(*resolver)
-		if resolve.finished && resolve.answer.expiredAt.Before(time.Now()) {
-			resolve.finished = false
+		resolver = cached.(*dnsResolver)
+		if resolver.finished && resolver.answer.expiredAt.Before(time.Now()) {
+			resolver.finished = false
 			ok = false
 		}
 	}
 
-	if resolve.finished {
-		c.Unlock()
-		return reply(r, resolve.answer), nil
+	if resolver.finished {
+		d.Unlock()
+		return resolver.answer.ip, resolver.answer.expiredAt
 	}
 
-	ch := make(chan answer, 1)
-	resolve.waiters = append(resolve.waiters, ch)
-	c.Unlock()
+	ch := make(chan answerCache, 1)
+	resolver.waiters = append(resolver.waiters, ch)
+	d.Unlock()
 
 	if !ok {
-		go c.do(key, r)
+		go d.do(ctx, host)
 	}
 
 	timeout := time.NewTimer(timeout)
@@ -68,92 +61,39 @@ func (c *HandlerOverCache) Lookup(r *dns.Msg) (*dns.Msg, error) {
 
 	select {
 	case answer := <-ch:
-		if answer.msg != nil {
-			return reply(r, answer), nil
-		} else if answer.err != nil {
-			return nil, answer.err
-		}
+		return answer.ip, answer.expiredAt
 	case <-timeout.C:
+		return nil, time.Now()
 	}
-	return nil, ErrLookupTimeout
 }
 
-func (c *HandlerOverCache) String() string {
-	return "CACHE"
+func (d *HandlerOverCache) String() string {
+	return "[CACHE]"
 }
 
-func (c *HandlerOverCache) do(key string, question *dns.Msg) {
+func (d *HandlerOverCache) do(ctx context.Context, host string) {
+	var ip net.IP
 	var expriedAt = time.Now()
 
-	var err error
-	var answer *dns.Msg
-	for _, upstream := range c.upstreams {
-		host := strings.TrimRight(question.Question[0].Name, ".")
-		if answer, err = upstream.Lookup(question); err == nil  {
-			expriedAt = expriedAt.Add(time.Duration(getTTL(answer)) * time.Second)
-			logrus.Infof("dns lookup %s via %s", host, upstream.String())
+	for _, upstream := range d.upstreams {
+		ip, expriedAt = upstream.Lookup(ctx, host)
+		if ip != nil {
 			break
-		} else {
-			logrus.Warnf("failed to dns lookup %s via %s: %v", host, upstream.String(), err)
 		}
 	}
 
-	c.Lock()
-	defer c.Unlock()
+	d.Lock()
+	defer d.Unlock()
 
-	Value, _ := c.cache.Get(key)
-	resolver := Value.(*resolver)
+	cache, _ := d.cache.Get(host)
+	resolver := cache.(*dnsResolver)
 	resolver.finished = true
-	resolver.answer.msg = answer
-	resolver.answer.err = err
+	resolver.answer.ip = ip
 	resolver.answer.expiredAt = expriedAt
 
-	for _, water := range resolver.waiters {
-		water <- resolver.answer
-		close(water)
+	for _, ch := range resolver.waiters {
+		ch <- resolver.answer
+		close(ch)
 	}
 	resolver.waiters = nil
-}
-
-type answer struct {
-	msg       *dns.Msg
-	expiredAt time.Time
-	err       error
-}
-
-type resolver struct {
-	waiters  []chan answer
-	answer   answer
-	finished bool
-}
-
-func makeMsgAsString(r *dns.Msg) string {
-	var question []string
-	for _, q := range r.Question {
-		question = append(question, q.String())
-	}
-	key := strings.Join(question, "")
-	return key
-}
-
-func reply(question *dns.Msg, answer answer) *dns.Msg {
-	msg := answer.msg.Copy()
-	msg.Id = question.Id
-	left := answer.expiredAt.Sub(time.Now())
-	modifyTTL(msg, uint32(left/time.Second))
-	return msg
-}
-
-func getTTL(msg *dns.Msg) uint32 {
-	for i := range msg.Answer {
-		return msg.Answer[i].Header().Ttl
-	}
-
-	return 0
-}
-
-func modifyTTL(msg *dns.Msg, ttl uint32) {
-	for i := range msg.Answer {
-		msg.Answer[i].Header().Ttl = ttl
-	}
 }

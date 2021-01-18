@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/fanpei91/spn/dialer"
 	"github.com/fanpei91/spn/proxy"
@@ -15,7 +16,6 @@ import (
 )
 
 type flags struct {
-	dnsListenAddr           string
 	dnsUpstream             string
 	serverMode              bool
 	serverAddr              string
@@ -49,7 +49,6 @@ func main() {
 	flag.UintVar(&f.staticDoHTTLInSeconds, "static-doh-ttl", 86400, "use static DoH ttl")
 	flag.IntVar(&f.rateLimitBytesPerSecond, "rate-limit-bytes-per-second", 20*1024*1024, "rate limit bytes per second on fooling site")
 	flag.StringVar(&f.dnsUpstream, "dns-upstream", "1.1.1.1:53", "dns upstream")
-	flag.StringVar(&f.dnsListenAddr, "dns-listen-addr", "127.0.0.1:53", "internal dns listen address")
 	flag.StringVar(&f.outboundIface, "outbound-iface", "en0", "outbound interface to bind to")
 	flag.StringVar(&f.nic, "nic", "Wi-Fi", "nic to set DNS on")
 	flag.BoolVar(&f.enableDNSFallback, "enable-dns-fallback", true, "enable dns fallback when the safest dns way fails")
@@ -84,7 +83,6 @@ func main() {
 	logrus.Infof("server address: %s", f.serverAddr)
 	logrus.Infof("secret key: %s", f.secretKey)
 	logrus.Infof("static DoH TTL: %d", f.staticDoHTTLInSeconds)
-	logrus.Infof("internal DNS server listen on: %s", f.dnsListenAddr)
 	logrus.Infof("upstream DNS: %s", f.dnsUpstream)
 	logrus.Infof("outbound interface: %s", f.outboundIface)
 	logrus.Infof("nic: %s", f.nic)
@@ -96,10 +94,9 @@ func main() {
 	sys, _ := system.New(
 		f.nic,
 		f.dnsUpstream,
-		f.dnsListenAddr,
 		f.secretKey,
 		f.serverAddr,
-		uint32(f.staticDoHTTLInSeconds),
+		time.Duration(f.staticDoHTTLInSeconds)*time.Second,
 		f.enableDNSFallback,
 		f.hijackDNS,
 	)
