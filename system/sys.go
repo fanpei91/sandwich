@@ -3,7 +3,6 @@ package system
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -117,13 +116,7 @@ func (s *System) Setup() error {
 	}
 
 	c := cron.New()
-	c.AddFunc("@every 4h", func() {
-		logrus.Infof("pulling the latest IP db...")
-		if err := s.pullLatestIPdb(context.Background()); err != nil {
-			logrus.Errorf("failed to pull the latest IP db: %v", err)
-			return
-		}
-	})
+	c.AddFunc("@every 4h", s.pullLatestIPdb)
 	c.Start()
 
 	return nil
@@ -237,7 +230,7 @@ func (s *System) handleConn(conn net.Conn, setReadDeadline func(conn net.Conn)) 
 		return
 	}
 
-	logrus.Infof("exchange data between %s and %s via proxy %s", targetConn.LocalAddr(), targetConn.RemoteAddr(), via)
+	logrus.Infof("exchange data %s <-> %s via proxy %s", targetConn.LocalAddr(), targetConn.RemoteAddr(), via)
 
 	if setReadDeadline != nil {
 		setReadDeadline(conn)
@@ -269,7 +262,10 @@ func (s *System) outboundConn(conn net.Conn) (net.Conn, error) {
 	}, nil
 }
 
-func (s *System) pullLatestIPdb(ctx context.Context) error {
+func (s *System) pullLatestIPdb() {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
 	addr := "http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, addr, nil)
 	res, err := s.ipdbClient.Do(req)
@@ -277,7 +273,8 @@ func (s *System) pullLatestIPdb(ctx context.Context) error {
 		defer res.Body.Close()
 	}
 	if err != nil {
-		return err
+		logrus.Errorf("failed to request apnic: %v", err)
+		return
 	}
 
 	reader := bufio.NewReader(res.Body)
@@ -286,14 +283,16 @@ func (s *System) pullLatestIPdb(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			logrus.Errorf("timeout to pull the latest ip db")
+			return
 		default:
 		}
 
 		if line, _, err = reader.ReadLine(); err != nil && err == io.EOF {
 			break
 		} else if err != nil {
-			return err
+			logrus.Errorf("failed to read data from apnic: %v", err)
+			return
 		}
 
 		if len(line) == 0 || line[0] == '#' {
@@ -312,7 +311,8 @@ func (s *System) pullLatestIPdb(ctx context.Context) error {
 
 		prefixLength, err := strconv.Atoi(value)
 		if err != nil {
-			return err
+			logrus.Errorf("failed to parse prefix: %v", err)
+			return
 		}
 		if typ == "ipv4" {
 			prefixLength = 32 - int(math.Log(float64(prefixLength))/math.Log(2))
@@ -322,7 +322,8 @@ func (s *System) pullLatestIPdb(ctx context.Context) error {
 	}
 
 	if len(db) == 0 {
-		return errors.New("empty ip range db")
+		logrus.Errorf("got empty db")
+		return
 	}
 
 	ipdb.China.Lock()
@@ -330,7 +331,7 @@ func (s *System) pullLatestIPdb(ctx context.Context) error {
 	ipdb.China.DB = db
 	ipdb.China.Init()
 	sort.Sort(ipdb.China)
-	return nil
+	return
 }
 
 type outboundConn struct {
