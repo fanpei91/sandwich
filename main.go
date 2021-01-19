@@ -16,7 +16,7 @@ import (
 )
 
 type flags struct {
-	dnsUpstream             string
+	upstreamDNS             string
 	serverMode              bool
 	serverAddr              string
 	listenAddr              string
@@ -46,9 +46,9 @@ func main() {
 	flag.StringVar(&f.privateKeyFile, "private-key-file", "", "private key file path")
 	flag.StringVar(&f.secretKey, "secret-key", "secret key", "secrect key to cross firewall")
 	flag.StringVar(&f.reversedWebsite, "reversed-website", "http://mirror.siena.edu/ubuntu/", "reversed website to fool firewall")
-	flag.UintVar(&f.staticDoHTTLInSeconds, "static-doh-ttl", 86400, "use static DoH ttl")
+	flag.UintVar(&f.staticDoHTTLInSeconds, "static-doh-ttl", 86400, "static DoH ttl")
 	flag.IntVar(&f.rateLimitBytesPerSecond, "rate-limit-bytes-per-second", 20*1024*1024, "rate limit bytes per second on fooling site")
-	flag.StringVar(&f.dnsUpstream, "dns-upstream", "1.1.1.1:53", "dns upstream")
+	flag.StringVar(&f.upstreamDNS, "upstream-dns", "114.114.114.114:53", "dns upstream")
 	flag.StringVar(&f.outboundIface, "outbound-iface", "en0", "outbound interface to bind to")
 	flag.StringVar(&f.nic, "nic", "Wi-Fi", "nic to set DNS on")
 	flag.BoolVar(&f.enableDNSFallback, "enable-dns-fallback", true, "enable dns fallback when the safest dns way fails")
@@ -79,11 +79,11 @@ func main() {
 		return
 	}
 
-	logrus.Info("mode: tun")
+	logrus.Info("mode: client")
 	logrus.Infof("server address: %s", f.serverAddr)
 	logrus.Infof("secret key: %s", f.secretKey)
 	logrus.Infof("static DoH TTL: %d", f.staticDoHTTLInSeconds)
-	logrus.Infof("upstream DNS: %s", f.dnsUpstream)
+	logrus.Infof("upstream DNS: %s", f.upstreamDNS)
 	logrus.Infof("outbound interface: %s", f.outboundIface)
 	logrus.Infof("nic: %s", f.nic)
 	logrus.Infof("DNS fallback enabled: %v", f.enableDNSFallback)
@@ -93,7 +93,7 @@ func main() {
 
 	sys, _ := system.New(
 		f.nic,
-		f.dnsUpstream,
+		f.upstreamDNS,
 		f.secretKey,
 		f.serverAddr,
 		time.Duration(f.staticDoHTTLInSeconds)*time.Second,

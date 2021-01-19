@@ -67,10 +67,6 @@ func (s *FoolingServer) crossWall(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if network == "udp" || network == "udp4" || network == "udp6" {
-		target.SetReadDeadline(time.Now().Add(UDPReadTimeout))
-	}
-
 	clean(req)
 
 	client, _, _ := rw.(http.Hijacker).Hijack()
@@ -78,6 +74,10 @@ func (s *FoolingServer) crossWall(rw http.ResponseWriter, req *http.Request) {
 		client.Write([]byte(fmt.Sprintf("%s 200 OK\r\n\r\n", req.Proto)))
 	} else {
 		req.Write(target)
+	}
+
+	if network == "udp" || network == "udp4" || network == "udp6" {
+		target.SetReadDeadline(time.Now().Add(UDPReadTimeout))
 	}
 
 	go utils.Exchange(client, target)

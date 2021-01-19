@@ -11,11 +11,11 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/fanpei91/spn/dialer"
+	"github.com/fanpei91/spn/utils"
 )
 
 type Handler interface {
-	Lookup(ctx context.Context, host string) (net.IP, time.Time)
+	Lookup(host string) (net.IP, time.Time)
 	String() string
 }
 
@@ -33,42 +33,24 @@ type HandlerOverHTTPS struct {
 
 type Proxy func(*http.Request) (*url.URL, error)
 
-func NewHandlerOverHTTPS(
-	staticTTL time.Duration,
-	provider string,
-	upstreamToLookupProvider string,
-	timeout time.Duration,
-	proxy Proxy,
-	proxyHeader http.Header,
-) *HandlerOverHTTPS {
-	hander := &HandlerOverHTTPS{
+func NewHandlerOverHTTPS(staticTTL time.Duration, provider string, upstreamToLookupProvider string, timeout time.Duration, proxy Proxy, proxyHeader http.Header) *HandlerOverHTTPS {
+	handler := &HandlerOverHTTPS{
 		staticTTL: staticTTL,
 		provider:  provider,
 		proxy:     proxy,
 		timeout:   timeout,
-		client: &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				Proxy: proxy,
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					d, err := dialer.NewWithResolver(upstreamToLookupProvider)
-					if err != nil {
-						return nil, err
-					}
-
-					return d.DialContext(ctx, network, addr)
-				},
-				ProxyConnectHeader: proxyHeader,
-			},
-		},
+		client:    utils.HTTPClient(timeout, proxy, proxyHeader, upstreamToLookupProvider),
 	}
-	return hander
+	return handler
 }
 
-func (h *HandlerOverHTTPS) Lookup(ctx context.Context, host string) (ip net.IP, expriedAt time.Time) {
-	provider := fmt.Sprintf("https://rubyfish.cn/dns-query?name=%s", host)
+func (h *HandlerOverHTTPS) Lookup(host string) (ip net.IP, expriedAt time.Time) {
+	provider := fmt.Sprintf("https://rubyfish.cn/dns-query?name=%s&type=A", host)
 	req, _ := http.NewRequest(http.MethodGet, provider, nil)
 	req.Header.Set("Accept", "application/dns-json")
+
+	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
+	defer cancel()
 	req = req.WithContext(ctx)
 
 	res, err := h.client.Do(req)

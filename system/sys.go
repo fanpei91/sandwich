@@ -39,20 +39,13 @@ type System struct {
 	serverAddr         string
 	originalDNSServers []string
 	dnsHijacker        *dns.Hijacker
-	dnsResovler        dns.Handler
+	dnsResolver        dns.Handler
 	listener           *tun.Listener
 	hijackDNS          bool
+	ipdbClient         *http.Client
 }
 
-func New(
-	nic,
-	upstreamDNS,
-	secretKey,
-	serverAddr string,
-	staticDoHTTL time.Duration,
-	enableDNSFallback,
-	hijackDNS bool,
-) (sys *System, err error) {
+func New(nic, upstreamDNS, secretKey, serverAddr string, staticDoHTTL time.Duration, enableDNSFallback, hijackDNS bool) (sys *System, err error) {
 	sys = &System{
 		nic:          nic,
 		upstreamDNS:  upstreamDNS,
@@ -82,8 +75,19 @@ func New(
 		)
 	}
 
-	sys.dnsResovler = dns.NewHandlerOverCache(upstreams)
+	sys.dnsResolver = dns.NewHandlerOverCache(upstreams)
 	sys.dnsHijacker, _ = dns.NewHijacker(ipRange)
+
+	sys.ipdbClient = utils.HTTPClient(
+		5*time.Minute,
+		func(request *http.Request) (*url.URL, error) {
+			return url.Parse("https://" + serverAddr)
+		},
+		http.Header{
+			proxy.HeaderSecret: []string{secretKey},
+		},
+		upstreamDNS,
+	)
 	return sys, nil
 }
 
@@ -115,8 +119,9 @@ func (s *System) Setup() error {
 	c := cron.New()
 	c.AddFunc("@every 4h", func() {
 		logrus.Infof("pulling the latest IP db...")
-		if err := s.pullLatestIPRange(context.Background()); err != nil {
-			logrus.Errorf("failed to pull latest IP db: %v", err)
+		if err := s.pullLatestIPdb(context.Background()); err != nil {
+			logrus.Errorf("failed to pull the latest IP db: %v", err)
+			return
 		}
 	})
 	c.Start()
@@ -174,7 +179,7 @@ func (s *System) handleTCP(tunConn net.Conn) {
 		return
 	}
 
-	s.handleConn(conn)
+	s.handleConn(conn, nil)
 }
 
 func (s *System) handleUDP(tunConn net.Conn) {
@@ -191,11 +196,10 @@ func (s *System) handleUDP(tunConn net.Conn) {
 		return
 	}
 
-	conn.SetReadDeadline(time.Now().Add(proxy.UDPReadTimeout))
-	s.handleConn(conn)
+	s.handleConn(conn, func(conn net.Conn) { conn.SetReadDeadline(time.Now().Add(proxy.UDPReadTimeout)) })
 }
 
-func (s *System) handleConn(conn net.Conn) {
+func (s *System) handleConn(conn net.Conn, setReadDeadline func(conn net.Conn)) {
 	targetAddr := conn.RemoteAddr().String()
 	targetHost, _, _ := net.SplitHostPort(targetAddr)
 	targetIP := net.ParseIP(targetHost)
@@ -233,8 +237,11 @@ func (s *System) handleConn(conn net.Conn) {
 		return
 	}
 
-	logrus.Infof("exchange data between %s and %s", targetConn.LocalAddr(), targetConn.RemoteAddr())
+	logrus.Infof("exchange data between %s and %s via proxy %s", targetConn.LocalAddr(), targetConn.RemoteAddr(), via)
 
+	if setReadDeadline != nil {
+		setReadDeadline(conn)
+	}
 	go utils.Exchange(conn, targetConn)
 	utils.Exchange(targetConn, conn)
 }
@@ -248,17 +255,12 @@ func (s *System) outboundConn(conn net.Conn) (net.Conn, error) {
 		return conn, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	addr, _ := s.dnsResovler.Lookup(ctx, host)
+	addr, _ := s.dnsResolver.Lookup(host)
 	if addr == nil {
-		logrus.Warnf("failed to lookup %s", host)
-		return conn, nil
+		return conn, fmt.Errorf("no such host: %s", host)
 	}
 
 	p, _ := strconv.ParseInt(port, 10, 32)
-
-	logrus.Infof("lookup %s -> %s", host, addr)
 
 	return outboundConn{
 		Conn:    conn,
@@ -267,32 +269,10 @@ func (s *System) outboundConn(conn net.Conn) (net.Conn, error) {
 	}, nil
 }
 
-func (s *System) pullLatestIPRange(ctx context.Context) error {
-	u, _ := url.Parse("https://" + s.serverAddr)
-
-	client := &http.Client{
-		Timeout: time.Second * 3,
-		Transport: &http.Transport{
-			Proxy: func(request *http.Request) (i *url.URL, e error) {
-				return u, nil
-			},
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				d, err := dialer.NewWithResolver(s.upstreamDNS)
-				if err != nil {
-					return nil, err
-				}
-
-				return d.DialContext(ctx, network, addr)
-			},
-			ProxyConnectHeader: http.Header{
-				proxy.HeaderSecret: []string{s.secretKey},
-			},
-		},
-	}
-
+func (s *System) pullLatestIPdb(ctx context.Context) error {
 	addr := "http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, addr, nil)
-	res, err := client.Do(req)
+	res, err := s.ipdbClient.Do(req)
 	if res != nil {
 		defer res.Body.Close()
 	}
@@ -368,5 +348,5 @@ func (r outboundConn) RemoteAddr() net.Addr {
 }
 
 func (r outboundConn) LocalAddr() net.Addr {
-	return r.Conn.RemoteAddr()
+	return r.Conn.LocalAddr()
 }

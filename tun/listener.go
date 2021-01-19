@@ -171,34 +171,20 @@ func (l *Listener) Close() error {
 	return nil
 }
 
-type tunConn struct {
-	net.Conn
-	localAddr  net.Addr
-	remoteAddr net.Addr
-}
-
-func newTunConn(id stack.TransportEndpointID, conn net.Conn) tunConn {
-	return tunConn{
+func newTunConn(id stack.TransportEndpointID, conn net.Conn) dialer.Conn {
+	return dialer.Conn{
 		Conn: conn,
-		localAddr: dialer.Addr{
+		Local: dialer.Addr{
 			IP:   net.ParseIP(id.RemoteAddress.String()),
 			Port: int(id.RemotePort),
 			Net:  conn.RemoteAddr().Network(),
 		},
-		remoteAddr: dialer.Addr{
+		Remote: dialer.Addr{
 			IP:   net.ParseIP(id.LocalAddress.String()),
 			Port: int(id.LocalPort),
 			Net:  conn.LocalAddr().Network(),
 		},
 	}
-}
-
-func (c tunConn) LocalAddr() net.Addr {
-	return c.localAddr
-}
-
-func (c tunConn) RemoteAddr() net.Addr {
-	return c.remoteAddr
 }
 
 // From https://github.com/xjasonlyu/tun2socks

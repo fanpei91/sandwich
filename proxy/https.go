@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 
 	"github.com/fanpei91/spn/dialer"
 )
@@ -47,7 +48,17 @@ func (t *httpsClient) Dial(ctx context.Context, network string, addr string) (ne
 		return nil, err
 	}
 
-	return conn, nil
+	host, port, _ := net.SplitHostPort(addr)
+	p, _ := strconv.ParseInt(port, 10, 32)
+	return dialer.Conn{
+		Conn:  conn,
+		Local: conn.LocalAddr(),
+		Remote: dialer.Addr{
+			Net:  network,
+			IP:   net.ParseIP(host),
+			Port: int(p),
+		},
+	}, nil
 }
 
 func (t *httpsClient) connect(conn net.Conn, network, target string) error {

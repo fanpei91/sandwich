@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net"
 	"sync"
-
-	"github.com/miekg/dns"
 )
 
 type fakeIPPool struct {
@@ -51,9 +49,7 @@ func (p *fakeIPPool) reverseLookup(ip net.IP) (string, bool) {
 	return v, ok
 }
 
-func (p *fakeIPPool) lookup(question *dns.Msg) net.IP {
-	host := question.Question[0].Name
-
+func (p *fakeIPPool) lookup(host string) net.IP {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -64,17 +60,16 @@ func (p *fakeIPPool) lookup(question *dns.Msg) net.IP {
 	p.offset = (p.offset + 1) % (p.max - p.min)
 	ipNum := p.min + p.offset - 1
 
-	p.overwrite(ipNum, question)
+	p.overwrite(ipNum, host)
 
 	return uintToIPv4(ipNum)
 }
 
-func (p *fakeIPPool) overwrite(ipNum uint32, question *dns.Msg) {
+func (p *fakeIPPool) overwrite(ipNum uint32, host string) {
 	if answer := p.questionCache[ipNum]; answer != "" {
 		delete(p.answerCache, answer)
 	}
 
-	host := question.Question[0].Name
 	p.answerCache[host] = ipNum
 	p.questionCache[ipNum] = host
 }

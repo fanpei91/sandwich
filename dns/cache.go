@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"context"
 	"net"
 	"sync"
 	"time"
@@ -11,11 +10,11 @@ import (
 )
 
 const (
-	timeout = 10 * time.Second
+	timeout = time.Minute
 )
 
 type HandlerOverCache struct {
-	sync.RWMutex
+	mutext    sync.RWMutex
 	upstreams []Handler
 	cache     *lru.Cache
 }
@@ -28,8 +27,8 @@ func NewHandlerOverCache(upstreams []Handler) *HandlerOverCache {
 	return d
 }
 
-func (d *HandlerOverCache) Lookup(ctx context.Context, host string) (ip net.IP, expriedAt time.Time) {
-	d.Lock()
+func (d *HandlerOverCache) Lookup(host string) (ip net.IP, expiredAt time.Time) {
+	d.mutext.Lock()
 
 	cached, ok := d.cache.Get(host)
 	var resolver *dnsResolver
@@ -45,25 +44,25 @@ func (d *HandlerOverCache) Lookup(ctx context.Context, host string) (ip net.IP, 
 	}
 
 	if resolver.finished {
-		d.Unlock()
+		d.mutext.Unlock()
 		return resolver.answer.ip, resolver.answer.expiredAt
 	}
 
 	ch := make(chan answerCache, 1)
 	resolver.waiters = append(resolver.waiters, ch)
-	d.Unlock()
+	d.mutext.Unlock()
 
 	if !ok {
-		go d.do(ctx, host)
+		go d.do(host)
 	}
 
-	timeout := time.NewTimer(timeout)
-	defer timeout.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	select {
 	case answer := <-ch:
 		return answer.ip, answer.expiredAt
-	case <-timeout.C:
+	case <-timer.C:
 		return nil, time.Now()
 	}
 }
@@ -72,26 +71,27 @@ func (d *HandlerOverCache) String() string {
 	return "[CACHE]"
 }
 
-func (d *HandlerOverCache) do(ctx context.Context, host string) {
+func (d *HandlerOverCache) do(host string) {
 	var ip net.IP
-	var expriedAt = time.Now()
+	var expiredAt = time.Now()
 
 	for _, upstream := range d.upstreams {
-		ip, expriedAt = upstream.Lookup(ctx, host)
+		ip, expiredAt = upstream.Lookup(host)
 		if ip != nil {
+			logrus.Infof("lookup %s -> %s via %s", host, ip, upstream.String())
 			break
 		}
 		logrus.Warnf("failed to lookup %s via %s", host, upstream.String())
 	}
 
-	d.Lock()
-	defer d.Unlock()
+	d.mutext.Lock()
+	defer d.mutext.Unlock()
 
 	cache, _ := d.cache.Get(host)
 	resolver := cache.(*dnsResolver)
 	resolver.finished = true
 	resolver.answer.ip = ip
-	resolver.answer.expiredAt = expriedAt
+	resolver.answer.expiredAt = expiredAt
 
 	for _, ch := range resolver.waiters {
 		ch <- resolver.answer

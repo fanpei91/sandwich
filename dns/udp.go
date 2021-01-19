@@ -21,7 +21,7 @@ func NewHandlerOverUDP(upstream string, timeout time.Duration) *HandlerOverUDP {
 	}
 }
 
-func (h *HandlerOverUDP) Lookup(ctx context.Context, host string) (ip net.IP, expriedAt time.Time) {
+func (h *HandlerOverUDP) Lookup(host string) (ip net.IP, expriedAt time.Time) {
 	resolver := new(net.Resolver)
 	resolver.PreferGo = true
 	resolver.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -33,6 +33,8 @@ func (h *HandlerOverUDP) Lookup(ctx context.Context, host string) (ip net.IP, ex
 		return d.DialContext(ctx, "udp", h.upstream)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
+	defer cancel()
 	ips, err := resolver.LookupIP(ctx, "ip", host)
 	expriedAt = time.Now()
 	if err != nil {

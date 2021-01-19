@@ -38,13 +38,13 @@ func (h *Hijacker) TryHijack(conn net.Conn) (net.Conn, bool) {
 
 	n, err := conn.Read(buf)
 	if err != nil {
-		logrus.Debugf("hijack non-DNS connection %v", conn.RemoteAddr())
+		logrus.Errorf("got error while hijacking connection %v: %v", conn.RemoteAddr(), err)
 		return nil, true
 	}
 
 	question := new(dns.Msg)
 
-	if err := question.Unpack(buf[:n]); err != nil || question.Question[0].Qtype != dns.TypeA {
+	if err := question.Unpack(buf[:n]); err != nil {
 		read := make([]byte, n)
 		copy(read, buf[:n])
 		return &readConn{
@@ -59,38 +59,39 @@ func (h *Hijacker) TryHijack(conn net.Conn) (net.Conn, bool) {
 }
 
 func (h *Hijacker) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
-	domain := r.Question[0].Name
-	host := strings.TrimRight(domain, ".")
-
 	answer := r.Copy()
 	answer.SetRcode(r, dns.RcodeSuccess)
 	answer.Authoritative = true
 	answer.RecursionAvailable = true
 
-	ip, _ := h.hosts.Lookup(nil, host)
-	if ip != nil {
+	for _, question := range r.Question {
+		domain := question.Name
+		host := strings.TrimRight(domain, ".")
+
+		ip, _ := h.hosts.Lookup(host)
+		if ip != nil {
+			answer.Answer = append(answer.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: domain, Rrtype: ipToType(ip), Class: dns.ClassINET, Ttl: 0},
+				A:   ip,
+			})
+			logrus.Infof("dns hijack %s -> %s in hosts", host, ip)
+			continue
+		}
+
+		if !strings.Contains(host, ".") {
+			logrus.Debugf("dns hijacking detection: %s", host)
+			handleFailed(w, r, dns.RcodeNameError)
+			return
+		}
+
+		ip = h.pool.lookup(host)
 		answer.Answer = append(answer.Answer, &dns.A{
-			Hdr: dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 0},
+			Hdr: dns.RR_Header{Name: domain, Rrtype: ipToType(ip), Class: dns.ClassINET, Ttl: 0},
 			A:   ip,
 		})
-		logrus.Infof("dns hijack %s to hosts", host)
-		w.WriteMsg(answer)
-		return
+
+		logrus.Infof("dns hijack %s -> %s in fakeip", host, ip)
 	}
-
-	if !strings.Contains(host, ".") {
-		logrus.Debugf("dns hijacking detection: %s", host)
-		handleFailed(w, r, dns.RcodeNameError)
-		return
-	}
-
-	ip = h.pool.lookup(r)
-	answer.Answer = append(answer.Answer, &dns.A{
-		Hdr: dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 0},
-		A:   ip,
-	})
-
-	logrus.Infof("dns hijack %s -> %v", host, ip.String())
 
 	w.WriteMsg(answer)
 }
@@ -103,6 +104,16 @@ func handleFailed(w dns.ResponseWriter, r *dns.Msg, code int) {
 	m := new(dns.Msg)
 	m.SetRcode(r, code)
 	w.WriteMsg(m)
+}
+
+func ipToType(ip net.IP) uint16 {
+	if len(ip) == net.IPv4len {
+		return dns.TypeA
+	}
+	if len(ip) == net.IPv6len {
+		return dns.TypeAAAA
+	}
+	return dns.TypeNone
 }
 
 type dnsResponseWriter struct {

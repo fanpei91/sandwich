@@ -5,6 +5,8 @@ package dialer
 import (
 	"net"
 	"syscall"
+
+	"github.com/sirupsen/logrus"
 )
 
 // From https://github.com/Dreamacro/clash
@@ -20,6 +22,7 @@ func Bind(ifce string) {
 			if err == nil {
 				ip := net.ParseIP(host)
 				if ip != nil && !ip.IsGlobalUnicast() {
+					logrus.Warnf("%s is not a global unicat address", ip)
 					return nil
 				}
 			}

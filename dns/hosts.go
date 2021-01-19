@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"time"
@@ -19,7 +18,7 @@ func NewHandlerOverHost(ttl uint32) HandlerOverHost {
 	}
 }
 
-func (h HandlerOverHost) Lookup(_ context.Context, host string) (net.IP, time.Time) {
+func (h HandlerOverHost) Lookup(host string) (net.IP, time.Time) {
 	res := goLookupIPFiles(host)
 	if len(res) == 0 {
 		return nil, time.Now()
