@@ -1,6 +1,6 @@
 # sandwich
 
-A simple, safe, and tun based transparent proxy for the users on China Mainland.
+A fucking simple, smart, and tun-based(powered by gVisor TCP/IP stack) transparent proxy for the people in China Mainland.
 
 # Server
 1. compile from source code for your Linux server:
@@ -17,7 +17,7 @@ GOOS=linux GOARCH=amd64 go build -o ~/sandwich-amd64-linux .
  -secret-key=key
 ```
 
-# Client
+# Client(macOS only)
 1. compile from source code for your macOS:
 ```bash
 go build -o ~/sandwich-amd64-darwin .
@@ -30,5 +30,6 @@ sudo ~/sandwich-amd64-darwin -server-addr=<yourdomain:443> -secret-key=key
 ```
 
 # Credits
+* [gVisor](https://github.com/google/gvisor)
 * [Clash](https://github.com/Dreamacro/clash)
 * [tun2socks](https://github.com/xjasonlyu/tun2socks)
