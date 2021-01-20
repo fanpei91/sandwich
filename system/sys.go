@@ -163,16 +163,13 @@ func (s *System) acceptTCP() {
 }
 
 func (s *System) handleTCP(tunConn net.Conn) {
-	var err error
-	var conn net.Conn
-
-	conn, err = s.outboundConn(tunConn)
+	conn, domain, err := s.outboundConn(tunConn)
 	if err != nil {
 		tunConn.Close()
 		return
 	}
 
-	s.handleConn(conn, nil)
+	s.handleConn(conn, domain, nil)
 }
 
 func (s *System) handleUDP(tunConn net.Conn) {
@@ -183,16 +180,24 @@ func (s *System) handleUDP(tunConn net.Conn) {
 		}
 	}
 
-	conn, err := s.outboundConn(tunConn)
+	conn, domain, err := s.outboundConn(tunConn)
 	if err != nil {
 		tunConn.Close()
 		return
 	}
 
-	s.handleConn(conn, func(conn net.Conn) { conn.SetReadDeadline(time.Now().Add(proxy.UDPReadTimeout)) })
+	s.handleConn(
+		conn,
+		domain,
+		func(conn net.Conn) {
+			conn.SetReadDeadline(
+				time.Now().Add(proxy.UDPReadTimeout),
+			)
+		},
+	)
 }
 
-func (s *System) handleConn(conn net.Conn, setReadDeadline func(conn net.Conn)) {
+func (s *System) handleConn(conn net.Conn, domain string, setReadDeadline func(conn net.Conn)) {
 	targetAddr := conn.RemoteAddr().String()
 	targetHost, _, _ := net.SplitHostPort(targetAddr)
 	targetIP := net.ParseIP(targetHost)
@@ -215,14 +220,19 @@ func (s *System) handleConn(conn net.Conn, setReadDeadline func(conn net.Conn)) 
 	var targetConn net.Conn
 	var err error
 
-	logrus.Infof("%s dial %s://%s via proxy %s", conn.LocalAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr(), via)
+	if domain != "" {
+		domain = fmt.Sprintf("[%s]", domain)
+	}
+
+	logrus.Infof("%s dial %s://%s%s via proxy %s", conn.LocalAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr(), domain, via)
 
 	if targetConn, err = dial(context.Background(), network, targetAddr); err != nil {
 		logrus.Warnf(
-			"%s faield to dial %s://%s via proxy %s: %v",
+			"%s faield to dial %s://%s%s via proxy %s: %v",
 			conn.LocalAddr(),
 			conn.RemoteAddr().Network(),
 			conn.RemoteAddr(),
+			domain,
 			via,
 			err,
 		)
@@ -230,7 +240,7 @@ func (s *System) handleConn(conn net.Conn, setReadDeadline func(conn net.Conn)) 
 		return
 	}
 
-	logrus.Infof("exchange data %s <-> %s via proxy %s", targetConn.LocalAddr(), targetConn.RemoteAddr(), via)
+	logrus.Infof("exchange data %s <-> %s%s via proxy %s", targetConn.LocalAddr(), targetConn.RemoteAddr(), domain, via)
 
 	if setReadDeadline != nil {
 		setReadDeadline(conn)
@@ -239,27 +249,23 @@ func (s *System) handleConn(conn net.Conn, setReadDeadline func(conn net.Conn)) 
 	utils.Exchange(targetConn, conn)
 }
 
-func (s *System) outboundConn(conn net.Conn) (net.Conn, error) {
+func (s *System) outboundConn(conn net.Conn) (outConn net.Conn, domain string, err error) {
 	host, port, _ := net.SplitHostPort(conn.RemoteAddr().String())
 	ip := net.ParseIP(host)
 
 	host, ok := s.dnsHijacker.ReverseLookup(ip)
 	if !ok {
-		return conn, nil
+		return conn, "", nil
 	}
 
 	addr, _ := s.dnsResolver.Lookup(host)
 	if addr == nil {
-		return conn, fmt.Errorf("no such host: %s", host)
+		return conn, host, fmt.Errorf("no such host: %s", host)
 	}
 
 	p, _ := strconv.ParseInt(port, 10, 32)
 
-	return outboundConn{
-		Conn:    conn,
-		dstAddr: addr,
-		dstPort: int(p),
-	}, nil
+	return outboundConn{Conn: conn, dstAddr: addr, dstPort: int(p)}, host, nil
 }
 
 func (s *System) pullLatestIPdb() {
