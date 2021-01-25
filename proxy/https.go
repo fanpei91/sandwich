@@ -14,15 +14,12 @@ import (
 )
 
 type Client interface {
-	Dial(ctx context.Context, network string, addr string) (net.Conn, error)
+	Dial(ctx context.Context, network string, ipAddr string) (net.Conn, error)
+	String() string
 }
 
 var HTTPS = func(server, dns string, extraHeader http.Header) Client {
-	return &httpsClient{
-		server:      server,
-		dns:         dns,
-		extraHeader: extraHeader,
-	}
+	return NewHTTPSClient(server, dns, extraHeader)
 }
 
 type httpsClient struct {
@@ -31,7 +28,34 @@ type httpsClient struct {
 	extraHeader http.Header
 }
 
-func (t *httpsClient) Dial(ctx context.Context, network string, addr string) (net.Conn, error) {
+func NewHTTPSClient(server, dns string, extraHeader http.Header) *httpsClient {
+	return &httpsClient{
+		server:      server,
+		dns:         dns,
+		extraHeader: extraHeader,
+	}
+}
+
+func (t *httpsClient) Dial(ctx context.Context, network string, ipAddr string) (net.Conn, error) {
+	conn, err := t.DialHost(ctx, network, ipAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	host, port, _ := net.SplitHostPort(ipAddr)
+	p, _ := strconv.ParseInt(port, 10, 32)
+	return dialer.Conn{
+		Conn:  conn,
+		Local: conn.LocalAddr(),
+		Remote: dialer.Addr{
+			Net:  network,
+			IP:   net.ParseIP(host),
+			Port: int(p),
+		},
+	}, nil
+}
+
+func (t *httpsClient) DialHost(ctx context.Context, network, addr string) (net.Conn, error) {
 	d, err := dialer.NewWithResolver(t.dns)
 	if err != nil {
 		return nil, err
@@ -48,17 +72,11 @@ func (t *httpsClient) Dial(ctx context.Context, network string, addr string) (ne
 		return nil, err
 	}
 
-	host, port, _ := net.SplitHostPort(addr)
-	p, _ := strconv.ParseInt(port, 10, 32)
-	return dialer.Conn{
-		Conn:  conn,
-		Local: conn.LocalAddr(),
-		Remote: dialer.Addr{
-			Net:  network,
-			IP:   net.ParseIP(host),
-			Port: int(p),
-		},
-	}, nil
+	return conn, nil
+}
+
+func (t *httpsClient) String() string {
+	return "HTTPS"
 }
 
 func (t *httpsClient) connect(conn net.Conn, network, target string) error {

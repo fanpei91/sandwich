@@ -11,11 +11,15 @@ type directClient struct{}
 
 var Direct Client = directClient{}
 
-func (d directClient) Dial(ctx context.Context, network string, addr string) (net.Conn, error) {
+func (d directClient) Dial(ctx context.Context, network string, ipAddr string) (net.Conn, error) {
 	dial, err := dialer.New()
 	if err != nil {
 		return nil, err
 	}
 
-	return dial.DialContext(ctx, network, addr)
+	return dial.DialContext(ctx, network, ipAddr)
+}
+
+func (d directClient) String() string {
+	return "DIRECT"
 }

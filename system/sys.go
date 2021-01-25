@@ -3,6 +3,7 @@ package system
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -28,6 +29,8 @@ const (
 	gateway = "198.18.0.1"
 	ipRange = "198.18.0.0/16"
 )
+
+var errNoSuchHost = errors.New("lookup: no such host")
 
 type System struct {
 	nic                string
@@ -164,8 +167,8 @@ func (s *System) acceptTCP() {
 
 func (s *System) handleTCP(tunConn net.Conn) {
 	conn, domain, err := s.outboundConn(tunConn)
-	if err != nil {
-		tunConn.Close()
+	if err != nil && err == errNoSuchHost {
+		s.handleNoSuchHostConn(tunConn, domain)
 		return
 	}
 
@@ -181,8 +184,8 @@ func (s *System) handleUDP(tunConn net.Conn) {
 	}
 
 	conn, domain, err := s.outboundConn(tunConn)
-	if err != nil {
-		tunConn.Close()
+	if err != nil && err == errNoSuchHost {
+		s.handleNoSuchHostConn(tunConn, domain)
 		return
 	}
 
@@ -197,24 +200,57 @@ func (s *System) handleUDP(tunConn net.Conn) {
 	)
 }
 
+func (s *System) handleNoSuchHostConn(conn net.Conn, domain string) {
+	client := proxy.NewHTTPSClient(
+		s.serverAddr,
+		s.upstreamDNS,
+		http.Header{
+			proxy.HeaderSecret: []string{s.secretKey},
+		},
+	)
+	network := conn.RemoteAddr().Network()
+
+	_, port, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	addr := net.JoinHostPort(domain, port)
+
+	logrus.Infof("%s dial %s://%s via proxy %s", conn.LocalAddr(), network, addr, client.String())
+
+	targetConn, err := client.DialHost(context.Background(), network, addr)
+	if err != nil {
+		logrus.Warnf(
+			"%s faield to dial %s://%s via proxy %s: %v",
+			conn.LocalAddr(),
+			network,
+			addr,
+			client.String(),
+			err,
+		)
+		conn.Close()
+		return
+	}
+
+	logrus.Infof("exchange data %s <-> %s via %s", conn.LocalAddr(), addr, client.String())
+
+	go utils.Exchange(conn, targetConn)
+	utils.Exchange(targetConn, conn)
+}
+
 func (s *System) handleConn(conn net.Conn, domain string, setReadDeadline func(conn net.Conn)) {
 	targetAddr := conn.RemoteAddr().String()
 	targetHost, _, _ := net.SplitHostPort(targetAddr)
 	targetIP := net.ParseIP(targetHost)
 	network := conn.RemoteAddr().Network()
 
-	via := "DIRECT"
-	var dial = proxy.Direct.Dial
+	var client = proxy.Direct
 
 	if !ipdb.China.Contains(targetIP) && !ipdb.Private.Contains(targetIP) {
-		dial = proxy.HTTPS(
+		client = proxy.HTTPS(
 			s.serverAddr,
 			s.upstreamDNS,
 			http.Header{
 				proxy.HeaderSecret: []string{s.secretKey},
 			},
-		).Dial
-		via = "HTTPS"
+		)
 	}
 
 	var targetConn net.Conn
@@ -224,23 +260,23 @@ func (s *System) handleConn(conn net.Conn, domain string, setReadDeadline func(c
 		domain = fmt.Sprintf("[%s]", domain)
 	}
 
-	logrus.Infof("%s dial %s://%s%s via proxy %s", conn.LocalAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr(), domain, via)
+	logrus.Infof("%s dial %s://%s%s via proxy %s", conn.LocalAddr(), conn.RemoteAddr().Network(), conn.RemoteAddr(), domain, client.String())
 
-	if targetConn, err = dial(context.Background(), network, targetAddr); err != nil {
+	if targetConn, err = client.Dial(context.Background(), network, targetAddr); err != nil {
 		logrus.Warnf(
 			"%s faield to dial %s://%s%s via proxy %s: %v",
 			conn.LocalAddr(),
 			conn.RemoteAddr().Network(),
 			conn.RemoteAddr(),
 			domain,
-			via,
+			client.String(),
 			err,
 		)
 		conn.Close()
 		return
 	}
 
-	logrus.Infof("exchange data %s <-> %s%s via proxy %s", targetConn.LocalAddr(), targetConn.RemoteAddr(), domain, via)
+	logrus.Infof("exchange data %s <-> %s%s via proxy %s", targetConn.LocalAddr(), targetConn.RemoteAddr(), domain, client.String())
 
 	if setReadDeadline != nil {
 		setReadDeadline(conn)
@@ -260,7 +296,7 @@ func (s *System) outboundConn(conn net.Conn) (outConn net.Conn, domain string, e
 
 	addr, _ := s.dnsResolver.Lookup(host)
 	if addr == nil {
-		return conn, host, fmt.Errorf("no such host: %s", host)
+		return conn, host, errNoSuchHost
 	}
 
 	p, _ := strconv.ParseInt(port, 10, 32)
